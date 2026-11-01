@@ -64,11 +64,17 @@ def viewer_command(viewer, viewer_args):
             raise RuntimeError("antiview not found in PATH")
         command = [program]
     else:
-        script_name = viewer + ".py"
-        program = find_program(script_name)
-        if program is None:
-            raise RuntimeError(f"{script_name} not found in PATH")
-        command = [sys.executable, program]
+        # pipx installs executable entry points without the .py suffix.
+        program = find_program(viewer, viewer + ".exe")
+        if program is not None:
+            command = [program]
+        else:
+            # Backward compatibility with standalone Python scripts.
+            script_name = viewer + ".py"
+            program = find_program(script_name)
+            if program is None:
+                raise RuntimeError(f"{viewer} not found in PATH")
+            command = [sys.executable, program]
 
     if viewer_args:
         command.extend(
@@ -114,6 +120,7 @@ def run_model(
     viewer_args,
     antiview_args,
     verbose,
+    try_title=True,
 ):
     """Launch one model and return viewer name and process list."""
     suffix = path.suffix.lower()
@@ -123,10 +130,7 @@ def run_model(
     else:
         viewer = off_viewer
 
-    if viewer == "antiview":
-        extra_args = f'{antiview_args} -T "{path.name}"'
-    else:
-        extra_args = ""
+    extra_args = antiview_args if viewer == "antiview" else ""
 
     if viewer_args:
         if extra_args:
@@ -134,6 +138,8 @@ def run_model(
         extra_args += viewer_args
 
     viewer_cmd = viewer_command(viewer, extra_args)
+    if viewer == "antiview" and try_title:
+        viewer_cmd.extend(["-T", path.name])
     producer_cmd = source_command(path)
 
     processes = []
@@ -187,7 +193,28 @@ def run_model(
         if previous is not opened_file:
             previous.close()
 
-        return viewer, processes, opened_file
+        # An older Antiview rejects -T and normally exits immediately.
+        # Restart the entire pipeline: its stdin may already be consumed.
+        if viewer == "antiview" and try_title:
+            try:
+                status = viewer_proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass  # Viewer remains active; the title option worked.
+            else:
+                if status != 0:
+                    if verbose:
+                        print(
+                            "stepview: antiview failed with -T; "
+                            "retrying without it",
+                            file=sys.stderr,
+                        )
+                    stop_processes(processes, opened_file)
+                    return run_model(
+                        path, off_viewer, subcommand, viewer_args,
+                        antiview_args, verbose, try_title=False,
+                    )
+
+        return viewer, processes, opened_file, try_title
 
     except Exception:
         if opened_file is not None:
@@ -391,19 +418,21 @@ def main():
         )
 
     try:
+        try_title = True
         for index, path in enumerate(files):
             print(
                 f"viewing: '{path.name}'",
                 file=sys.stderr,
             )
 
-            viewer, processes, opened_file = run_model(
+            viewer, processes, opened_file, try_title = run_model(
                 path,
                 args.viewer,
                 args.subcommand,
                 args.viewer_args,
                 args.antiview_args,
                 args.verbose,
+                try_title=try_title,
             )
 
             if viewer == "antiview":

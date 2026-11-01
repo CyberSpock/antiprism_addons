@@ -85,6 +85,8 @@ def _resolve_program(command):
         raise CommandError("empty command")
     program = str(command[0])
     resolved = shutil.which(program)
+    if resolved is None and not program.lower().endswith(".exe"):
+        resolved = shutil.which(program + ".exe")
     if resolved is None:
         raise CommandError(f"required program '{program}' not found in PATH")
     return [resolved, *[str(arg) for arg in command[1:]]]
